@@ -16,18 +16,30 @@ export default function PlayerHand({ cards, playableIds, onPlay, isOpponent = fa
   return (
     <div className="flex flex-col items-center gap-2">
       {label && (
-        <p className="text-white/70 text-sm font-bold uppercase tracking-wider">{label}</p>
+        <p className="text-white/60 text-xs font-bold uppercase tracking-widest">{label}</p>
       )}
-      <div className="flex flex-wrap gap-1.5 justify-center max-w-2xl px-2">
+
+      {/* Scrollable card row */}
+      <div
+        className="flex gap-1 justify-start px-4 overflow-x-auto no-scrollbar"
+        style={{ maxWidth: "100vw", paddingBottom: 4 }}
+      >
         <AnimatePresence mode="popLayout">
-          {cards.map((card) => (
+          {cards.map((card, i) => (
             <motion.div
               key={card.id}
-              initial={{ scale: 0.5, opacity: 0, y: -40 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.3, opacity: 0, y: -60 }}
-              transition={{ type: "spring", stiffness: 300, damping: 20 }}
               layout
+              initial={{ scale: 0.5, opacity: 0, y: isOpponent ? -30 : 30 }}
+              animate={{
+                scale: 1, opacity: 1, y: 0,
+                // slight fan for human hand (subtle rotation)
+                rotate: !isOpponent && cards.length > 4
+                  ? ((i - (cards.length - 1) / 2) / cards.length) * 6
+                  : 0,
+              }}
+              exit={{ scale: 0.3, opacity: 0, y: isOpponent ? -40 : 40 }}
+              transition={{ type: "spring", stiffness: 300, damping: 22, delay: i * 0.02 }}
+              style={{ flexShrink: 0 }}
             >
               {isOpponent ? (
                 <Card card={card} isBack small />
@@ -42,8 +54,11 @@ export default function PlayerHand({ cards, playableIds, onPlay, isOpponent = fa
           ))}
         </AnimatePresence>
       </div>
+
       {!isOpponent && (
-        <p className="text-white/50 text-xs font-medium">{cards.length} card{cards.length !== 1 ? "s" : ""}</p>
+        <p className="text-white/40 text-xs font-bold">
+          {cards.length} card{cards.length !== 1 ? "s" : ""}
+        </p>
       )}
     </div>
   );

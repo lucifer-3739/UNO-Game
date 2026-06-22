@@ -25,7 +25,14 @@ export type GamePhase =
   | "idle"
   | "playing"
   | "pickColor"
-  | "challenge"
+  | "challenge"       // human can challenge the AI's wild4
+  | "drawnCard"       // human drew a card and can optionally play it
   | "won";
 
 export type Difficulty = "easy" | "medium" | "hard";
+
+export interface Toast {
+  id: string;
+  message: string;
+  type: "info" | "success" | "warning" | "error";
+}

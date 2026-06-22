@@ -1,26 +1,75 @@
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap');
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --felt: #166534;
+  --felt-dark: #14532d;
+  --felt-light: #15803d;
+  --card-red: #dc2626;
+  --card-blue: #2563eb;
+  --card-green: #16a34a;
+  --card-yellow: #ca8a04;
+  --card-shadow: rgba(0,0,0,0.4);
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: 'Nunito', sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--felt-dark);
+  color: white;
+  font-family: 'Nunito', sans-serif;
+  overflow: hidden;
+}
+
+.card-shadow {
+  box-shadow: 0 8px 24px var(--card-shadow), 0 2px 6px rgba(0,0,0,0.3);
+}
+
+.felt-texture {
+  background: radial-gradient(ellipse at center, var(--felt-light) 0%, var(--felt) 50%, var(--felt-dark) 100%);
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 12px 4px rgba(250, 204, 21, 0.6); }
+  50% { box-shadow: 0 0 24px 8px rgba(250, 204, 21, 0.9); }
+}
+
+.uno-glow {
+  animation: pulse-glow 1.2s ease-in-out infinite;
+}
+
+@keyframes confetti-fall {
+  0% { transform: translateY(-20px) rotate(0deg); opacity: 1; }
+  100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+}
+
+.confetti-piece {
+  position: fixed;
+  width: 10px;
+  height: 10px;
+  animation: confetti-fall linear forwards;
+  pointer-events: none;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+.ai-thinking {
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.15) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s ease-in-out infinite;
 }

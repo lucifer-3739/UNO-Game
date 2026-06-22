@@ -203,6 +203,7 @@ export default function GameBoard({ difficulty = "medium" }: Props) {
               <AnimatePresence>
                 {ai.cards.length === 1 && ai.saidUno && (
                   <motion.span
+                    key="ai-uno"
                     initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }}
                     style={{ color: "#fbbf24", fontSize: 11, fontWeight: 900 }}
                     className="animate-pulse"
@@ -210,6 +211,7 @@ export default function GameBoard({ difficulty = "medium" }: Props) {
                 )}
                 {aiThinking && (
                   <motion.div
+                    key="ai-thinking"
                     initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                     className="ai-thinking"
                     style={{

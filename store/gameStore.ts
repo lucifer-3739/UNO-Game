@@ -246,8 +246,12 @@ export const useGameStore = create<GameState>((set, get) => ({
       toasts.push(makeToast(`${player.name} played Skip!`, "info"));
     } else if (card.value === "reverse") {
       direction = (direction * -1) as 1 | -1;
-      // With 2 players reverse = skip
-      nextPlayer = nextPlayerIndex(playerIndex, direction, newPlayers.length);
+      if (newPlayers.length === 2) {
+        // With 2 players, Reverse acts like Skip — current player goes again
+        nextPlayer = playerIndex;
+      } else {
+        nextPlayer = nextPlayerIndex(playerIndex, direction, newPlayers.length);
+      }
       toasts.push(makeToast(`${player.name} reversed direction!`, "info"));
     } else if (card.value === "draw2") {
       const drawn = drawN(2, drawPile, discardPile);

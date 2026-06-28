@@ -220,7 +220,37 @@ export default function Home() {
               }}
               aria-label="Start game"
             >
-              🃏 Play Now!
+              🃏 Play Solo (VS AI)
+            </motion.button>
+
+            {/* Play Multiplayer button */}
+            <motion.button
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.52 }}
+              whileHover={{ scale: 1.07, y: -4 }}
+              whileTap={{ scale: 0.96 }}
+              onClick={() => {
+                setStarting(true);
+                setTimeout(() => router.push("/multiplayer"), 400);
+              }}
+              style={{
+                width: "100%",
+                padding: "16px 0",
+                borderRadius: 20,
+                background: "linear-gradient(135deg, #3182ce 0%, #2a69ac 100%)",
+                border: "2px solid rgba(255,255,255,0.2)",
+                boxShadow: "0 8px 32px rgba(49,130,206,0.4), inset 0 1px 0 rgba(255,255,255,0.15)",
+                cursor: "pointer",
+                fontFamily: "'Nunito', sans-serif",
+                fontWeight: 900, fontSize: 20,
+                color: "white",
+                letterSpacing: 2,
+                textShadow: "0 2px 8px rgba(0,0,0,0.4)",
+              }}
+              aria-label="Play Multiplayer Online"
+            >
+              🌐 Play Multiplayer (Online)
             </motion.button>
 
             {/* Rules hint */}

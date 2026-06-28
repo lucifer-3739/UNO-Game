@@ -21,6 +21,7 @@ export interface MultiplayerGameState {
   activeColor: Color | null;
   winnerId: string | null;
   winnerName: string | null;
+  roundScore: number;
   toasts: Toast[];
   drawnCard: Card | null;
 
@@ -414,7 +415,7 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
           .order("created_at", { ascending: true });
 
         // Find a room with fewer than 4 players
-        const match = openRooms?.find((r) => r.players && r.players.length < 4);
+        const match = openRooms?.find((r: any) => r.players && r.players.length < 4);
 
         if (match) {
           set({ isConnecting: false });
@@ -1099,7 +1100,7 @@ function setupPresenceChannel(roomId: string) {
         });
       }
     })
-    .on("broadcast", { event: "webrtc-signal" }, async ({ payload }) => {
+    .on("broadcast", { event: "webrtc-signal" }, async ({ payload }: any) => {
       const { playerId, activePeerConnections } = useMultiplayerStore.getState();
       const { targetPlayerId, senderPlayerId, signalData } = payload;
 
@@ -1135,7 +1136,7 @@ function setupPresenceChannel(roomId: string) {
         console.error("Error handling WebRTC signal broadcast:", err);
       }
     })
-    .subscribe(async (status) => {
+    .subscribe(async (status: any) => {
       if (status === "SUBSCRIBED") {
         await channel.track({
           user: {

@@ -14,7 +14,6 @@ export default function MultiplayerRoom() {
   const roomId = (params?.roomId as string || "").toUpperCase();
 
   const {
-    socket,
     players,
     status,
     isHost,
@@ -69,12 +68,12 @@ export default function MultiplayerRoom() {
     }
   }, [roomId, playerId, playerName, connectSocket, setPlayerInfo]);
 
-  // Connect socket and join room once username is set
+  // Join room once username is set
   useEffect(() => {
-    if (socket && roomId && playerName && playerId && status === "idle") {
+    if (roomId && playerName && playerId && status === "idle") {
       joinRoom(roomId);
     }
-  }, [socket, roomId, playerName, playerId, status, joinRoom]);
+  }, [roomId, playerName, playerId, status, joinRoom]);
 
   // Cleanup when navigating away
   useEffect(() => {
@@ -237,7 +236,7 @@ export default function MultiplayerRoom() {
 
           <div className="flex flex-col gap-2">
             {players.map((p) => {
-              const hasVoice = p.id === playerId ? !!localStream : !!activePeerConnections[p.socketId];
+              const hasVoice = p.id === playerId ? !!localStream : !!activePeerConnections[p.id];
               return (
                 <div
                   key={p.id}

@@ -155,6 +155,53 @@ function calculateGameScore(gameState: any, winnerId: string): number {
   return score;
 }
 
+// Helper to update local store state, write state to database, and broadcast changes to other players
+function updateGameStateAndBroadcast(gs: any, updatedPlayers: any) {
+  const store = useMultiplayerStore.getState();
+  const roomId = store.roomId;
+  const playerId = store.playerId;
+  if (!roomId) return;
+
+  const myState = gs.players.find((ps: any) => ps.id === playerId);
+
+  // 1. Update local state
+  useMultiplayerStore.setState({
+    players: updatedPlayers,
+    currentPlayerIndex: gs.currentPlayerIndex,
+    drawPileCount: gs.drawPileCount,
+    discardPile: gs.discardPile,
+    direction: gs.direction as 1 | -1,
+    activeColor: gs.activeColor,
+    myCards: myState ? myState.cards : [],
+    toasts: (gs.toasts || []) as Toast[],
+    drawnCard: gs.drawnCard,
+  });
+
+  // 2. Update database
+  if (hasSupabase) {
+    supabase
+      .from("rooms")
+      .update({
+        players: updatedPlayers,
+        game_state: gs,
+      })
+      .eq("id", roomId)
+      .then(({ error }: any) => {
+        if (error) console.warn("Failed to update database room state:", error.message);
+      });
+  }
+
+  // 3. Broadcast to others
+  lobbyChannel?.send({
+    type: "broadcast",
+    event: "game-state-update",
+    payload: {
+      game_state: gs,
+      players: updatedPlayers,
+    },
+  });
+}
+
 export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
   players: [],
   myCards: [],
@@ -381,7 +428,24 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       return { ...p, cardsCount: ps ? ps.cards.length : 0 };
     });
 
-    // Update database
+    // Update local state instantly for the host
+    const myState = gameState.players.find((ps: any) => ps.id === get().playerId);
+    playSound("playShuffle");
+    set({
+      players: updatedPlayers,
+      status: "playing",
+      currentPlayerIndex: gameState.currentPlayerIndex,
+      drawPileCount: gameState.drawPileCount,
+      discardPile: gameState.discardPile,
+      direction: gameState.direction as 1 | -1,
+      activeColor: gameState.activeColor,
+      myCards: myState ? myState.cards : [],
+      toasts: (gameState.toasts || []) as Toast[],
+      winnerId: null,
+      winnerName: null,
+    });
+
+    // Update database & broadcast
     if (hasSupabase) {
       await supabase
         .from("rooms")
@@ -392,7 +456,6 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
         })
         .eq("id", roomId);
 
-      // Broadcast start event instantly to other clients
       lobbyChannel?.send({
         type: "broadcast",
         event: "game-started",
@@ -468,6 +531,15 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       gs.winnerName = playerState.name;
       gs.roundScore = calculateGameScore(gs, playerId);
 
+      // Update local winner state
+      playSound("playWin");
+      set({
+        status: "finished",
+        winnerName: playerState.name,
+        winnerId: playerId,
+        roundScore: gs.roundScore,
+      });
+
       // Save win state
       await supabase.from("rooms").update({
         status: "finished",
@@ -536,20 +608,7 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       return { ...p, cardsCount: ps ? ps.cards.length : 0 };
     });
 
-    await supabase.from("rooms").update({
-      players: updatedPlayers,
-      game_state: gs,
-    }).eq("id", roomId);
-
-    // Broadcast updated game state instantly
-    lobbyChannel?.send({
-      type: "broadcast",
-      event: "game-state-update",
-      payload: {
-        game_state: gs,
-        players: updatedPlayers,
-      },
-    });
+    updateGameStateAndBroadcast(gs, updatedPlayers);
   },
 
   drawCard: async () => {
@@ -593,19 +652,7 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       return { ...p, cardsCount: ps ? ps.cards.length : 0 };
     });
 
-    await supabase.from("rooms").update({
-      players: updatedPlayers,
-      game_state: gs,
-    }).eq("id", roomId);
-
-    lobbyChannel?.send({
-      type: "broadcast",
-      event: "game-state-update",
-      payload: {
-        game_state: gs,
-        players: updatedPlayers,
-      },
-    });
+    updateGameStateAndBroadcast(gs, updatedPlayers);
   },
 
   playDrawnCard: async (wildColor) => {
@@ -634,6 +681,14 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
         gs.winnerId = playerId;
         gs.winnerName = playerState.name;
         gs.roundScore = calculateGameScore(gs, playerId);
+
+        playSound("playWin");
+        set({
+          status: "finished",
+          winnerName: playerState.name,
+          winnerId: playerId,
+          roundScore: gs.roundScore,
+        });
 
         await supabase.from("rooms").update({
           status: "finished",
@@ -699,19 +754,7 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       return { ...p, cardsCount: ps ? ps.cards.length : 0 };
     });
 
-    await supabase.from("rooms").update({
-      players: updatedPlayers,
-      game_state: gs,
-    }).eq("id", roomId);
-
-    lobbyChannel?.send({
-      type: "broadcast",
-      event: "game-state-update",
-      payload: {
-        game_state: gs,
-        players: updatedPlayers,
-      },
-    });
+    updateGameStateAndBroadcast(gs, updatedPlayers);
   },
 
   passAfterDraw: async () => {
@@ -729,18 +772,7 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
     gs.currentPlayerIndex = (gs.currentPlayerIndex + gs.direction + gs.players.length) % gs.players.length;
     gs.toasts = [{ id: `toast-${Date.now()}`, message: `${gs.players[playerIdx].name} passed.`, type: "info" }];
 
-    await supabase.from("rooms").update({
-      game_state: gs,
-    }).eq("id", roomId);
-
-    lobbyChannel?.send({
-      type: "broadcast",
-      event: "game-state-update",
-      payload: {
-        game_state: gs,
-        players: room.players,
-      },
-    });
+    updateGameStateAndBroadcast(gs, room.players);
   },
 
   callUno: async () => {
@@ -763,19 +795,7 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
         p.id === playerId ? { ...p, saidUno: true } : p
       );
 
-      await supabase.from("rooms").update({
-        players: updatedPlayers,
-        game_state: gs,
-      }).eq("id", roomId);
-
-      lobbyChannel?.send({
-        type: "broadcast",
-        event: "game-state-update",
-        payload: {
-          game_state: gs,
-          players: updatedPlayers,
-        },
-      });
+      updateGameStateAndBroadcast(gs, updatedPlayers);
     }
   },
 
@@ -818,19 +838,7 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       return { ...p, cardsCount: ps ? ps.cards.length : 0, saidUno: ps ? ps.saidUno : false };
     });
 
-    await supabase.from("rooms").update({
-      players: updatedPlayers,
-      game_state: gs,
-    }).eq("id", roomId);
-
-    lobbyChannel?.send({
-      type: "broadcast",
-      event: "game-state-update",
-      payload: {
-        game_state: gs,
-        players: updatedPlayers,
-      },
-    });
+    updateGameStateAndBroadcast(gs, updatedPlayers);
   },
 
   // ── WebRTC Audio Chat Actions ──

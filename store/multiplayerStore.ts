@@ -42,7 +42,7 @@ export interface MultiplayerGameState {
 
   // Actions
   setPlayerInfo: (name: string, id: string) => void;
-  connectSocket: () => void; // Kept for compatibility, now boots DB channels
+  connectSocket: () => void;
   disconnectSocket: () => void;
   createRoom: (isPrivate?: boolean) => void;
   joinRoom: (roomId: string) => void;
@@ -67,8 +67,7 @@ export interface MultiplayerGameState {
 }
 
 // Active channels
-let dbSubscription: RealtimeChannel | null = null;
-let lobbyPresenceChannel: RealtimeChannel | null = null;
+let lobbyChannel: RealtimeChannel | null = null;
 
 // Helper to play sounds
 async function playSound(fn: string, ...args: any[]) {
@@ -192,112 +191,10 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
   },
 
   connectSocket: () => {
-    // Supabase Realtime is database-driven; we subscribe to rooms table changes dynamically
-    if (dbSubscription) return;
-
-    if (!hasSupabase) {
-      console.warn("Supabase credentials missing. Running in local simulation mode.");
-      return;
-    }
-
-    // Subscribe to Postgres changes on the 'rooms' table
-    dbSubscription = supabase
-      .channel("public-rooms-changes")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "rooms" },
-        async (payload: any) => {
-          const updatedRoom = payload.new;
-          const currentRoomId = get().roomId;
-          if (!updatedRoom || updatedRoom.id !== currentRoomId) return;
-
-          const { players, status, game_state, host_id } = updatedRoom;
-          const { playerId } = get();
-
-          const isHost = host_id === playerId;
-          const isGameOver = status === "finished";
-
-          const newState: Partial<MultiplayerGameState> = {
-            players,
-            isHost,
-            status,
-          };
-
-          if (isGameOver && game_state?.winnerId) {
-            playSound("playWin");
-            newState.winnerId = game_state.winnerId;
-            newState.winnerName = game_state.winnerName;
-            newState.roundScore = game_state.roundScore || 0;
-            set(newState);
-
-            // Handle stats upsert
-            try {
-              const isWinner = playerId === game_state.winnerId;
-              const { data: current } = await supabase
-                .from("leaderboard")
-                .select("*")
-                .eq("user_id", playerId)
-                .maybeSingle();
-
-              const wins = (current?.wins || 0) + (isWinner ? 1 : 0);
-              const games_played = (current?.games_played || 0) + 1;
-              const scoreToAdd = isWinner ? (game_state.roundScore || 100) : 10;
-              const newScore = (current?.score || 0) + scoreToAdd;
-
-              await supabase.from("leaderboard").upsert(
-                {
-                  user_id: playerId,
-                  username: get().playerName,
-                  wins,
-                  games_played,
-                  score: newScore,
-                  updated_at: new Date().toISOString(),
-                },
-                { onConflict: "user_id" }
-              );
-            } catch (err) {
-              console.error("Failed to save end game stats to Supabase:", err);
-            }
-            return;
-          }
-
-          if (game_state) {
-            newState.currentPlayerIndex = game_state.currentPlayerIndex;
-            newState.drawPileCount = game_state.drawPileCount;
-            newState.discardPile = game_state.discardPile;
-            newState.direction = game_state.direction;
-            newState.activeColor = game_state.activeColor;
-            newState.toasts = game_state.toasts || [];
-            newState.drawnCard = game_state.drawnCard;
-
-            // Trigger card sound
-            const prevTopCard = get().discardPile[get().discardPile.length - 1];
-            const currentTopCard = game_state.discardPile[game_state.discardPile.length - 1];
-            if (currentTopCard && currentTopCard.id !== prevTopCard?.id) {
-              if (currentTopCard.value === "wild" || currentTopCard.value === "wild4") {
-                playSound("playWild");
-              } else {
-                playSound("playCardPlay", currentTopCard.color);
-              }
-            }
-
-            const myPlayerState = game_state.players.find((p: any) => p.id === playerId);
-            if (myPlayerState) {
-              newState.myCards = myPlayerState.cards;
-            }
-          }
-
-          set(newState);
-        }
-      )
-      .subscribe();
+    // Legacy mapping - setup presence channel handles subscriptions dynamically
   },
 
   disconnectSocket: () => {
-    if (dbSubscription) {
-      supabase.removeChannel(dbSubscription);
-      dbSubscription = null;
-    }
     get().leaveRoom();
   },
 
@@ -327,13 +224,11 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
         if (error) throw error;
 
         set({ roomId: roomCode, isHost: true, status: "waiting", players: [newPlayer], isConnecting: false });
-        get().connectSocket();
-        setupPresenceChannel(roomCode);
+        setupLobbyChannel(roomCode);
       } catch (err: any) {
         set({ isConnecting: false, lobbyError: `Failed to create room: ${err.message}` });
       }
     } else {
-      // Local fallback simulation
       set({ roomId: roomCode, isHost: true, status: "waiting", players: [newPlayer], isConnecting: false });
     }
   },
@@ -379,7 +274,7 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
         if (playerIdx === -1) {
           updatedPlayers.push(newPlayer);
         } else {
-          updatedPlayers[playerIdx].name = playerName; // Update nickname
+          updatedPlayers[playerIdx].name = playerName;
         }
 
         const { error: updateErr } = await supabase
@@ -390,38 +285,32 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
         if (updateErr) throw updateErr;
 
         set({ roomId, isHost: room.host_id === playerId, status: "waiting", players: updatedPlayers, isConnecting: false });
-        get().connectSocket();
-        setupPresenceChannel(roomId);
+        setupLobbyChannel(roomId);
       } catch (err: any) {
         set({ isConnecting: false, lobbyError: err.message });
       }
     } else {
-      // Local Simulation
       set({ roomId, isHost: false, status: "waiting", isConnecting: false });
     }
   },
 
   matchmake: async () => {
-    const { playerId } = get();
     set({ isConnecting: true, lobbyError: null });
 
     if (hasSupabase) {
       try {
-        // Query database for open rooms
         const { data: openRooms } = await supabase
           .from("rooms")
           .select("*")
           .eq("status", "waiting")
           .order("created_at", { ascending: true });
 
-        // Find a room with fewer than 4 players
         const match = openRooms?.find((r: any) => r.players && r.players.length < 4);
 
         if (match) {
           set({ isConnecting: false });
           get().joinRoom(match.id);
         } else {
-          // If no rooms are open, create a new public one
           set({ isConnecting: false });
           get().createRoom(false);
         }
@@ -487,12 +376,12 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       gameState.toasts.push({ id: "toast-draw2", message: `${playerStates[1 % playerStates.length].name} draws 2 and is skipped!`, type: "warning" });
     }
 
-    // Sync card counts in players list
     const updatedPlayers = players.map(p => {
       const ps = playerStates.find(ps => ps.id === p.id);
       return { ...p, cardsCount: ps ? ps.cards.length : 0 };
     });
 
+    // Update database
     if (hasSupabase) {
       await supabase
         .from("rooms")
@@ -502,6 +391,17 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
           game_state: gameState,
         })
         .eq("id", roomId);
+
+      // Broadcast start event instantly to other clients
+      lobbyChannel?.send({
+        type: "broadcast",
+        event: "game-started",
+        payload: {
+          status: "playing",
+          players: updatedPlayers,
+          game_state: gameState,
+        },
+      });
     }
   },
 
@@ -509,19 +409,17 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
     const { roomId, playerId, players } = get();
     if (!roomId) return;
 
-    if (lobbyPresenceChannel) {
-      supabase.removeChannel(lobbyPresenceChannel);
-      lobbyPresenceChannel = null;
+    if (lobbyChannel) {
+      supabase.removeChannel(lobbyChannel);
+      lobbyChannel = null;
     }
 
     if (hasSupabase) {
       try {
         const remaining = players.filter(p => p.id !== playerId);
         if (remaining.length === 0) {
-          // Room is empty, delete
           await supabase.from("rooms").delete().eq("id", roomId);
         } else {
-          // Reassign host if necessary
           const hostId = remaining[0].id;
           remaining[0].isHost = true;
 
@@ -570,10 +468,22 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       gs.winnerName = playerState.name;
       gs.roundScore = calculateGameScore(gs, playerId);
 
+      // Save win state
       await supabase.from("rooms").update({
         status: "finished",
         game_state: gs,
       }).eq("id", roomId);
+
+      // Broadcast game over instantly
+      lobbyChannel?.send({
+        type: "broadcast",
+        event: "game-over",
+        payload: {
+          winnerName: playerState.name,
+          winnerId: playerId,
+          score: gs.roundScore,
+        },
+      });
       return;
     }
 
@@ -621,7 +531,6 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
 
     gs.drawPileCount = gs.drawPile.length;
 
-    // Sync counts
     const updatedPlayers = room.players.map((p: any) => {
       const ps = gs.players.find((ps: any) => ps.id === p.id);
       return { ...p, cardsCount: ps ? ps.cards.length : 0 };
@@ -631,6 +540,16 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       players: updatedPlayers,
       game_state: gs,
     }).eq("id", roomId);
+
+    // Broadcast updated game state instantly
+    lobbyChannel?.send({
+      type: "broadcast",
+      event: "game-state-update",
+      payload: {
+        game_state: gs,
+        players: updatedPlayers,
+      },
+    });
   },
 
   drawCard: async () => {
@@ -658,7 +577,6 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
 
     gs.toasts = [];
 
-    // Auto-pass if the drawn card is not playable
     const topCard = gs.discardPile[gs.discardPile.length - 1];
     const activeColor = gs.activeColor || topCard.color;
     const card = gs.drawnCard;
@@ -679,6 +597,15 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       players: updatedPlayers,
       game_state: gs,
     }).eq("id", roomId);
+
+    lobbyChannel?.send({
+      type: "broadcast",
+      event: "game-state-update",
+      payload: {
+        game_state: gs,
+        players: updatedPlayers,
+      },
+    });
   },
 
   playDrawnCard: async (wildColor) => {
@@ -712,6 +639,16 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
           status: "finished",
           game_state: gs,
         }).eq("id", roomId);
+
+        lobbyChannel?.send({
+          type: "broadcast",
+          event: "game-over",
+          payload: {
+            winnerName: playerState.name,
+            winnerId: playerId,
+            score: gs.roundScore,
+          },
+        });
         return;
       }
 
@@ -766,6 +703,15 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       players: updatedPlayers,
       game_state: gs,
     }).eq("id", roomId);
+
+    lobbyChannel?.send({
+      type: "broadcast",
+      event: "game-state-update",
+      payload: {
+        game_state: gs,
+        players: updatedPlayers,
+      },
+    });
   },
 
   passAfterDraw: async () => {
@@ -786,6 +732,15 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
     await supabase.from("rooms").update({
       game_state: gs,
     }).eq("id", roomId);
+
+    lobbyChannel?.send({
+      type: "broadcast",
+      event: "game-state-update",
+      payload: {
+        game_state: gs,
+        players: room.players,
+      },
+    });
   },
 
   callUno: async () => {
@@ -804,7 +759,6 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       playerState.saidUno = true;
       gs.toasts = [{ id: `toast-${Date.now()}`, message: `${playerState.name} yelled UNO! 🃏`, type: "success" }];
 
-      // Sync players list
       const updatedPlayers = room.players.map((p: any) =>
         p.id === playerId ? { ...p, saidUno: true } : p
       );
@@ -813,6 +767,15 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
         players: updatedPlayers,
         game_state: gs,
       }).eq("id", roomId);
+
+      lobbyChannel?.send({
+        type: "broadcast",
+        event: "game-state-update",
+        payload: {
+          game_state: gs,
+          players: updatedPlayers,
+        },
+      });
     }
   },
 
@@ -840,7 +803,6 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
 
       gs.toasts = [{ id: `toast-${Date.now()}`, message: `${gs.players[playerIdx].name} caught ${targetPlayer.name} forgetting UNO! +2 cards penalty.`, type: "error" }];
     } else {
-      // Challenger penalty
       const challenger = gs.players[playerIdx];
       const drawn = drawCardsFromPile(2, gs.drawPile, gs.discardPile);
       challenger.cards.push(...drawn.cards);
@@ -860,6 +822,15 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       players: updatedPlayers,
       game_state: gs,
     }).eq("id", roomId);
+
+    lobbyChannel?.send({
+      type: "broadcast",
+      event: "game-state-update",
+      payload: {
+        game_state: gs,
+        players: updatedPlayers,
+      },
+    });
   },
 
   // ── WebRTC Audio Chat Actions ──
@@ -871,7 +842,6 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
       const { activePeerConnections, players, playerId } = get();
       const track = localStream.getAudioTracks()[0];
 
-      // Add our track to any existing peer connections (renegotiation)
       Object.entries(activePeerConnections).forEach(async ([peerPlayerId, pc]) => {
         const senders = pc.getSenders();
         const hasTrack = senders.some((s) => s.track === track);
@@ -880,7 +850,7 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
           try {
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
-            lobbyPresenceChannel?.send({
+            lobbyChannel?.send({
               type: "broadcast",
               event: "webrtc-signal",
               payload: {
@@ -895,7 +865,6 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
         }
       });
 
-      // Connect WebRTC to any remaining players
       players.forEach((p) => {
         if (p.id !== playerId && !activePeerConnections[p.id]) {
           initiateCall(p.id);
@@ -912,7 +881,7 @@ export const useMultiplayerStore = create<MultiplayerGameState>((set, get) => ({
     if (!localStream) return;
 
     localStream.getAudioTracks().forEach((track) => {
-      track.enabled = isMuted; // Toggle mute status of stream
+      track.enabled = isMuted;
     });
 
     set({ isMuted: !isMuted });
@@ -967,8 +936,8 @@ function createPeerConnection(targetPlayerId: string): RTCPeerConnection {
 
   pc.onicecandidate = (event) => {
     const { playerId } = useMultiplayerStore.getState();
-    if (event.candidate && lobbyPresenceChannel) {
-      lobbyPresenceChannel.send({
+    if (event.candidate && lobbyChannel) {
+      lobbyChannel.send({
         type: "broadcast",
         event: "webrtc-signal",
         payload: {
@@ -1015,13 +984,13 @@ function createPeerConnection(targetPlayerId: string): RTCPeerConnection {
 async function initiateCall(targetPlayerId: string) {
   const pc = createPeerConnection(targetPlayerId);
   const { playerId } = useMultiplayerStore.getState();
-  if (!lobbyPresenceChannel) return;
+  if (!lobbyChannel) return;
 
   try {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    lobbyPresenceChannel.send({
+    lobbyChannel.send({
       type: "broadcast",
       event: "webrtc-signal",
       payload: {
@@ -1071,25 +1040,56 @@ function removePeerConnection(playerId: string) {
   });
 }
 
-// Setup lobby channel for Presence and WebRTC signaling Broadcast
-function setupPresenceChannel(roomId: string) {
-  if (lobbyPresenceChannel) {
-    supabase.removeChannel(lobbyPresenceChannel);
+// Setup lobby channel for Presence, synchronization requests, and event broadcasting
+function setupLobbyChannel(roomId: string) {
+  if (lobbyChannel) {
+    supabase.removeChannel(lobbyChannel);
   }
 
   const store = useMultiplayerStore.getState();
   const channel = supabase.channel(`lobby:${roomId}`);
 
-  lobbyPresenceChannel = channel;
+  lobbyChannel = channel;
 
   channel
     .on("presence", { event: "sync" }, () => {
       const state = channel.presenceState();
-      const onlinePlayers = Object.values(state)
+      const onlinePlayers: any[] = Object.values(state)
         .flat()
         .map((p: any) => p.user);
 
-      // Sync active peer connections
+      // Filter out players who are no longer online in Presence
+      const currentPlayers = useMultiplayerStore.getState().players;
+      const filteredPlayers = currentPlayers.filter((cp) =>
+        onlinePlayers.some((op) => op.id === cp.id)
+      );
+
+      // If we are host and someone disconnected, update database and broadcast
+      const isHost = useMultiplayerStore.getState().isHost;
+      if (isHost && filteredPlayers.length !== currentPlayers.length && filteredPlayers.length > 0) {
+        useMultiplayerStore.setState({ players: filteredPlayers });
+        if (hasSupabase) {
+          supabase
+            .from("rooms")
+            .update({ players: filteredPlayers })
+            .eq("id", roomId)
+            .then(({ error }: any) => {
+              if (error) console.warn("Failed to update players list:", error.message);
+            });
+        }
+
+        channel.send({
+          type: "broadcast",
+          event: "room-sync",
+          payload: {
+            players: filteredPlayers,
+            hostId: store.playerId,
+            status: useMultiplayerStore.getState().status,
+          },
+        });
+      }
+
+      // Sync active WebRTC voice peer connections
       const localStream = useMultiplayerStore.getState().localStream;
       if (localStream) {
         onlinePlayers.forEach((p: any) => {
@@ -1098,6 +1098,155 @@ function setupPresenceChannel(roomId: string) {
             initiateCall(p.id);
           }
         });
+      }
+    })
+    .on("broadcast", { event: "request-sync" }, ({ payload }: any) => {
+      // Host hears sync request, appends new player, and broadcasts sync
+      const { isHost, players, playerId, status } = useMultiplayerStore.getState();
+      if (!isHost) return;
+
+      const { id, name } = payload;
+      const exists = players.some((p) => p.id === id);
+
+      let updatedPlayers = [...players];
+      if (!exists) {
+        updatedPlayers.push({
+          id,
+          name,
+          isHost: false,
+          saidUno: false,
+          cardsCount: 0,
+        });
+
+        useMultiplayerStore.setState({ players: updatedPlayers });
+
+        // Update database row
+        if (hasSupabase) {
+          supabase
+            .from("rooms")
+            .update({ players: updatedPlayers })
+            .eq("id", roomId)
+            .then(({ error }: any) => {
+              if (error) console.warn("Failed to update players list:", error.message);
+            });
+        }
+      }
+
+      // Broadcast back updated room information
+      channel.send({
+        type: "broadcast",
+        event: "room-sync",
+        payload: {
+          players: updatedPlayers,
+          hostId: playerId,
+          status,
+        },
+      });
+    })
+    .on("broadcast", { event: "room-sync" }, ({ payload }: any) => {
+      // Non-host players receive room listings
+      const { players, hostId, status } = payload;
+      const { playerId } = useMultiplayerStore.getState();
+
+      useMultiplayerStore.setState({
+        players,
+        isHost: hostId === playerId,
+        status,
+      });
+    })
+    .on("broadcast", { event: "game-started" }, ({ payload }: any) => {
+      // Listeners start game board
+      const { players, status, game_state } = payload;
+      const { playerId } = useMultiplayerStore.getState();
+      const myState = game_state.players.find((ps: any) => ps.id === playerId);
+
+      playSound("playShuffle");
+
+      useMultiplayerStore.setState({
+        players,
+        status,
+        currentPlayerIndex: game_state.currentPlayerIndex,
+        drawPileCount: game_state.drawPileCount,
+        discardPile: game_state.discardPile,
+        direction: game_state.direction,
+        activeColor: game_state.activeColor,
+        myCards: myState ? myState.cards : [],
+        toasts: game_state.toasts || [],
+        winnerId: null,
+        winnerName: null,
+      });
+    })
+    .on("broadcast", { event: "game-state-update" }, ({ payload }: any) => {
+      // Receive turn update
+      const { game_state, players } = payload;
+      const { playerId } = useMultiplayerStore.getState();
+      const myState = game_state.players.find((ps: any) => ps.id === playerId);
+
+      const currentTopCard = game_state.discardPile[game_state.discardPile.length - 1];
+      const prevTopCard = useMultiplayerStore.getState().discardPile[useMultiplayerStore.getState().discardPile.length - 1];
+
+      if (currentTopCard && currentTopCard.id !== prevTopCard?.id) {
+        if (currentTopCard.value === "wild" || currentTopCard.value === "wild4") {
+          playSound("playWild");
+        } else {
+          playSound("playCardPlay", currentTopCard.color);
+        }
+      }
+
+      useMultiplayerStore.setState({
+        players,
+        currentPlayerIndex: game_state.currentPlayerIndex,
+        drawPileCount: game_state.drawPileCount,
+        discardPile: game_state.discardPile,
+        direction: game_state.direction,
+        activeColor: game_state.activeColor,
+        myCards: myState ? myState.cards : [],
+        toasts: game_state.toasts || [],
+        drawnCard: game_state.drawnCard,
+      });
+    })
+    .on("broadcast", { event: "game-over" }, async ({ payload }: any) => {
+      // Game finishes
+      const { winnerName, winnerId, score } = payload;
+      const { playerId } = useMultiplayerStore.getState();
+      playSound("playWin");
+
+      useMultiplayerStore.setState({
+        status: "finished",
+        winnerName,
+        winnerId,
+        roundScore: score,
+      });
+
+      // Save stats to Supabase using upsert
+      if (hasSupabase) {
+        try {
+          const isWinner = playerId === winnerId;
+          const { data: current } = await supabase
+            .from("leaderboard")
+            .select("*")
+            .eq("user_id", playerId)
+            .maybeSingle();
+
+          const wins = (current?.wins || 0) + (isWinner ? 1 : 0);
+          const games_played = (current?.games_played || 0) + 1;
+          const scoreToAdd = isWinner ? (score || 100) : 10;
+          const newScore = (current?.score || 0) + scoreToAdd;
+
+          await supabase.from("leaderboard").upsert(
+            {
+              user_id: playerId,
+              username: useMultiplayerStore.getState().playerName,
+              wins,
+              games_played,
+              score: newScore,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "user_id" }
+          );
+        } catch (err) {
+          console.error("Failed to save end game stats to Supabase:", err);
+        }
       }
     })
     .on("broadcast", { event: "webrtc-signal" }, async ({ payload }: any) => {
@@ -1116,7 +1265,7 @@ function setupPresenceChannel(roomId: string) {
           await pc.setRemoteDescription(new RTCSessionDescription(signalData.sdp));
           const answer = await pc.createAnswer();
           await pc.setLocalDescription(answer);
-          lobbyPresenceChannel?.send({
+          lobbyChannel?.send({
             type: "broadcast",
             event: "webrtc-signal",
             payload: {
@@ -1144,6 +1293,18 @@ function setupPresenceChannel(roomId: string) {
             name: store.playerName,
           },
         });
+
+        // Request sync from existing host if we are joining
+        if (store.playerId !== store.players[0]?.id) {
+          channel.send({
+            type: "broadcast",
+            event: "request-sync",
+            payload: {
+              id: store.playerId,
+              name: store.playerName,
+            },
+          });
+        }
       }
     });
 }
